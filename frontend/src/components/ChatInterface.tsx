@@ -9,6 +9,7 @@ import { Waves } from "./animations/Waves";
 import { ErrorMessage } from "./core/ErrorMessage";
 import { KeyboardShortcuts } from "./core/KeyboardShortcuts";
 import { BuiltWithBadge } from "./core/BuiltWithBadge";
+import { UserProfile } from "./core/UserProfile";
 import type { IChatItem } from "../types/chat";
 import type { AppState } from "../types/appState";
 import type { AppError } from "../types/errors";
@@ -177,6 +178,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = (props) => {
     >
       <DropZone visible={isDragging} />
       <KeyboardShortcuts open={isShortcutsOpen} onOpenChange={setIsShortcutsOpen} />
+      <UserProfile />
       {/* Live region for announcing streaming status to screen readers */}
       <div 
         role="status" 
