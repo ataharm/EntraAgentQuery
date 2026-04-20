@@ -25,6 +25,9 @@
     },
     "enableObo": {
       "value": "${ENABLE_OBO=false}"
+    },
+    "entraSpaClientId": {
+      "value": "${ENTRA_SPA_CLIENT_ID=}"
     }
   }
 }

@@ -25,6 +25,9 @@ param serviceManagementReference string = ''
 @description('Enable OBO (On-Behalf-Of) flow for user-delegated access to Agent Service (secretless via FIC)')
 param enableObo bool = false
 
+@description('Pre-existing Entra SPA app client ID. When provided, skips Graph Bicep module (use in tenants that restrict programmatic app registration).')
+param entraSpaClientId string = ''
+
 @description('Container image for web service (set by postprovision hook)')
 param webImageName string = 'mcr.microsoft.com/k8se/quickstart:latest'  // Placeholder during initial provision
 
@@ -59,7 +62,8 @@ module infrastructure 'main-infrastructure.bicep' = {
 
 // Create Entra app registration (Microsoft Graph Bicep extension)
 // Creates with localhost-only redirect URIs; postprovision adds Container App FQDN + FIC
-module entraApp 'entra-app.bicep' = {
+// Skip when entraSpaClientId is provided (use in tenants that restrict programmatic app registration)
+module entraApp 'entra-app.bicep' = if (empty(entraSpaClientId)) {
   name: 'entra-app'
   scope: rg
   params: {
@@ -68,6 +72,12 @@ module entraApp 'entra-app.bicep' = {
     enableObo: enableObo
   }
 }
+
+// Resolve the SPA client ID: use the pre-existing one if provided, otherwise use the Bicep-created one
+var resolvedSpaClientId = !empty(entraSpaClientId) ? entraSpaClientId : entraApp.outputs.clientAppId
+var resolvedAppObjectId = !empty(entraSpaClientId) ? '' : entraApp.outputs.appObjectId
+var resolvedBackendClientId = !empty(entraSpaClientId) ? '' : (enableObo ? entraApp.outputs.backendClientAppId : '')
+var resolvedBackendAppObjectId = !empty(entraSpaClientId) ? '' : (enableObo ? entraApp.outputs.backendAppObjectId : '')
 
 // Deploy application (Container Apps + RBAC)
 module app 'main-app.bicep' = {
@@ -81,9 +91,9 @@ module app 'main-app.bicep' = {
     containerRegistryName: infrastructure.outputs.containerRegistryName
     aiAgentEndpoint: aiAgentEndpoint
     aiAgentId: aiAgentId
-    entraSpaClientId: entraApp.outputs.clientAppId
+    entraSpaClientId: resolvedSpaClientId
     entraTenantId: entraTenantId
-    entraBackendClientId: enableObo ? entraApp.outputs.backendClientAppId : ''
+    entraBackendClientId: resolvedBackendClientId
     webImageName: webImageName
     userAssignedIdentityId: infrastructure.outputs.managedIdentityId
     oboManagedIdentityClientId: infrastructure.outputs.managedIdentityClientId
@@ -102,9 +112,9 @@ output AZURE_RESOURCE_GROUP_NAME string = rg.name
 output AZURE_CONTAINER_APP_NAME string = app.outputs.webAppName
 output WEB_ENDPOINT string = app.outputs.webEndpoint
 output WEB_IDENTITY_PRINCIPAL_ID string = infrastructure.outputs.managedIdentityPrincipalId
-output ENTRA_SPA_CLIENT_ID string = entraApp.outputs.clientAppId
-output ENTRA_APP_OBJECT_ID string = entraApp.outputs.appObjectId
-output ENTRA_BACKEND_CLIENT_ID string = enableObo ? entraApp.outputs.backendClientAppId : ''
-output ENTRA_BACKEND_APP_OBJECT_ID string = enableObo ? entraApp.outputs.backendAppObjectId : ''
+output ENTRA_SPA_CLIENT_ID string = resolvedSpaClientId
+output ENTRA_APP_OBJECT_ID string = resolvedAppObjectId
+output ENTRA_BACKEND_CLIENT_ID string = resolvedBackendClientId
+output ENTRA_BACKEND_APP_OBJECT_ID string = resolvedBackendAppObjectId
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = infrastructure.outputs.appInsightsConnectionString
 output APPLICATIONINSIGHTS_FRONTEND_CONNECTION_STRING string = infrastructure.outputs.appInsightsFrontendConnectionString

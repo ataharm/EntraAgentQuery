@@ -29,40 +29,54 @@ if (-not $containerAppUrl) {
 Write-Host "[OK] Client ID: $clientId (from Bicep)" -ForegroundColor Green
 Write-Host "[OK] Container App: $containerAppUrl" -ForegroundColor Green
 
-# Set identifierUri and update redirect URIs on Entra app
-# identifierUri can't be set in Bicep because it references the auto-generated appId
-$app = az ad app show --id $clientId | ConvertFrom-Json
-$objectId = $app.id
-$identifierUri = "api://$clientId"
+# Detect if the Entra app is in a different tenant from the Azure CLI context.
+# This happens when app registrations are restricted in the deployment tenant and the
+# app was pre-created in a separate tenant (set via: azd env set ENTRA_TENANT_ID <id>).
+$cliTenantId = az account show --query tenantId -o tsv 2>$null
+$isExternalEntraTenant = $tenantId -and $cliTenantId -and ($tenantId -ne $cliTenantId)
 
-$patchBody = @{
-    identifierUris = @($identifierUri)
-    spa = @{
-        redirectUris = @(
-            "http://localhost:8080",
-            "http://localhost:5173",
-            $containerAppUrl
-        )
+if ($isExternalEntraTenant) {
+    Write-Host "[SKIP] Entra app update — app ($clientId) is in external tenant $tenantId" -ForegroundColor Yellow
+    Write-Host "[!] Complete these steps manually in https://portal.azure.com (tenant $tenantId):" -ForegroundColor Yellow
+    Write-Host "    1. Open App registrations → $clientId" -ForegroundColor White
+    Write-Host "    2. Authentication → Add redirect URI (SPA): $containerAppUrl" -ForegroundColor White
+    Write-Host "    3. Expose an API → Set Application ID URI to: api://$clientId" -ForegroundColor White
+} else {
+    # Set identifierUri and update redirect URIs on Entra app
+    # identifierUri can't be set in Bicep because it references the auto-generated appId
+    $app = az ad app show --id $clientId | ConvertFrom-Json
+    $objectId = $app.id
+    $identifierUri = "api://$clientId"
+
+    $patchBody = @{
+        identifierUris = @($identifierUri)
+        spa = @{
+            redirectUris = @(
+                "http://localhost:8080",
+                "http://localhost:5173",
+                $containerAppUrl
+            )
+        }
+    } | ConvertTo-Json -Depth 10
+
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    $patchBody | Out-File -FilePath $tempFile -Encoding utf8
+
+    az rest --method PATCH `
+        --uri "https://graph.microsoft.com/v1.0/applications/$objectId" `
+        --headers "Content-Type=application/json" `
+        --body "@$tempFile" | Out-Null
+
+    Remove-Item $tempFile -EA SilentlyContinue
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Failed to update Entra app" -ForegroundColor Red
+        exit 1
     }
-} | ConvertTo-Json -Depth 10
 
-$tempFile = [System.IO.Path]::GetTempFileName()
-$patchBody | Out-File -FilePath $tempFile -Encoding utf8
-
-az rest --method PATCH `
-    --uri "https://graph.microsoft.com/v1.0/applications/$objectId" `
-    --headers "Content-Type=application/json" `
-    --body "@$tempFile" | Out-Null
-
-Remove-Item $tempFile -EA SilentlyContinue
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] Failed to update Entra app" -ForegroundColor Red
-    exit 1
+    Write-Host "[OK] Identifier URI: $identifierUri" -ForegroundColor Green
+    Write-Host "[OK] Redirect URIs updated" -ForegroundColor Green
 }
-
-Write-Host "[OK] Identifier URI: $identifierUri" -ForegroundColor Green
-Write-Host "[OK] Redirect URIs updated" -ForegroundColor Green
 
 # OBO: Bicep creates backend app registration + service principal + requiredResourceAccess.
 # FIC + identifierUri + admin consent are handled here (not Bicep) because Graph API

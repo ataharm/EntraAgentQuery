@@ -61,10 +61,14 @@ export const VoiceInput: React.FC<VoiceInputProps> = ({ onTranscript, disabled =
       setIsListening(false);
 
       const msg =
-        event.error === 'not-allowed' ? 'Microphone access denied. Check browser permissions.' :
-        event.error === 'no-speech'   ? 'No speech detected. Please try again.' :
-        event.error === 'network'     ? 'Network error during voice input.' :
-        undefined;
+        event.error === 'not-allowed'          ? 'Microphone access denied. Check browser permissions.' :
+        event.error === 'no-speech'            ? 'No speech detected. Please try again.' :
+        event.error === 'network'              ? 'Network error during voice input. Speech recognition requires access to Google\'s speech servers.' :
+        event.error === 'audio-capture'        ? 'Microphone not found or unavailable.' :
+        event.error === 'service-not-allowed'  ? 'Speech recognition service is not allowed. Ensure the site is served over HTTPS.' :
+        event.error === 'language-not-supported' ? 'Language not supported for speech recognition.' :
+        event.error === 'aborted'              ? null :
+        `Speech recognition error: ${event.error}`;
 
       if (msg) {
         dispatchToast(
@@ -75,7 +79,16 @@ export const VoiceInput: React.FC<VoiceInputProps> = ({ onTranscript, disabled =
     };
 
     recognitionRef.current = recognition;
-    recognition.start();
+    try {
+      recognition.start();
+    } catch (err) {
+      recognitionRef.current = null;
+      dispatchToast(
+        <Toast><ToastTitle>Failed to start voice input. Please try again.</ToastTitle></Toast>,
+        { intent: 'error' },
+      );
+      return;
+    }
     setIsListening(true);
   }, [onTranscript, dispatchToast]);
 
