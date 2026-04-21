@@ -28,7 +28,7 @@ namespace WebApp.Api.Services;
 public class AgentFrameworkService : IDisposable
 {
     private readonly string _agentEndpoint;
-    private readonly string _defaultAgentId;
+    private string _defaultAgentId;
     private readonly string? _agentVersion;
     private readonly ILogger<AgentFrameworkService> _logger;
     private readonly IHttpContextAccessor? _httpContextAccessor;
@@ -37,7 +37,12 @@ public class AgentFrameworkService : IDisposable
     private readonly string? _managedIdentityClientId;
     private readonly bool _useObo;
     private readonly TokenCredential _fallbackCredential;
-    private readonly List<string> _configuredAgentIds;
+    private List<string> _configuredAgentIds;
+    private readonly bool _needsDynamicDiscovery;
+
+    // Static cache for dynamically discovered agent IDs (shared across scoped instances)
+    private static List<string>? s_discoveredAgentIds;
+    private static readonly SemaphoreSlim s_discoveryLock = new(1, 1);
 
     // Per-request agent ID (set via OverrideAgentId, falls back to _defaultAgentId)
     private string _effectiveAgentId;
@@ -69,27 +74,45 @@ public class AgentFrameworkService : IDisposable
         _agentEndpoint = configuration["AI_AGENT_ENDPOINT"]
             ?? throw new InvalidOperationException("AI_AGENT_ENDPOINT is not configured");
 
-        _defaultAgentId = configuration["AI_AGENT_ID"]
-            ?? throw new InvalidOperationException("AI_AGENT_ID is not configured");
-
-        _effectiveAgentId = _defaultAgentId;
-
-        // Parse optional comma-separated list of additional agent IDs
+        // Parse optional comma-separated list of agent IDs
         var agentIdsConfig = configuration["AI_AGENT_IDS"];
-        if (!string.IsNullOrWhiteSpace(agentIdsConfig))
-        {
-            _configuredAgentIds = agentIdsConfig
+        _configuredAgentIds = string.IsNullOrWhiteSpace(agentIdsConfig)
+            ? []
+            : agentIdsConfig
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            // Ensure default is always in the list
+
+        // AI_AGENT_ID is optional when AI_AGENT_IDS is set; default falls back to first entry
+        var explicitDefault = configuration["AI_AGENT_ID"];
+        if (!string.IsNullOrWhiteSpace(explicitDefault))
+        {
+            _defaultAgentId = explicitDefault;
             if (!_configuredAgentIds.Contains(_defaultAgentId, StringComparer.OrdinalIgnoreCase))
                 _configuredAgentIds.Insert(0, _defaultAgentId);
         }
+        else if (_configuredAgentIds.Count > 0)
+        {
+            _defaultAgentId = _configuredAgentIds[0];
+        }
         else
         {
-            _configuredAgentIds = [_defaultAgentId];
+            // Neither set — agents will be discovered dynamically on first request.
+            // Populate from static cache if a previous request already did the discovery.
+            if (s_discoveredAgentIds != null)
+            {
+                _configuredAgentIds = s_discoveredAgentIds;
+                _defaultAgentId = s_discoveredAgentIds[0];
+            }
+            else
+            {
+                _needsDynamicDiscovery = true;
+                _defaultAgentId = string.Empty;
+                _configuredAgentIds = [];
+            }
         }
+
+        _effectiveAgentId = _defaultAgentId;
 
         _agentVersion = string.IsNullOrWhiteSpace(configuration["AI_AGENT_VERSION"])
             ? null
@@ -223,6 +246,7 @@ public class AgentFrameworkService : IDisposable
 
     /// <summary>
     /// Override the agent ID for this request. Must be a configured agent ID.
+    /// Dynamic discovery is assumed to have already been performed by this point.
     /// </summary>
     public void OverrideAgentId(string agentId)
     {
@@ -233,9 +257,73 @@ public class AgentFrameworkService : IDisposable
 
     /// <summary>
     /// Get the list of configured agent IDs and the default.
+    /// If neither AI_AGENT_ID nor AI_AGENT_IDS was set, agents are discovered dynamically
+    /// from AI Foundry on the first call; the first returned agent becomes the default.
+    /// Throws <see cref="InvalidOperationException"/> if dynamic discovery returns no agents.
     /// </summary>
-    public (List<string> AgentIds, string DefaultAgentId) GetConfiguredAgents()
-        => (_configuredAgentIds, _defaultAgentId);
+    public async Task<(List<string> AgentIds, string DefaultAgentId)> GetConfiguredAgentsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureDynamicDiscoveryAsync(cancellationToken);
+        return (_configuredAgentIds, _defaultAgentId);
+    }
+
+    /// <summary>
+    /// Populates _configuredAgentIds and _defaultAgentId by calling the AI Foundry Agents API.
+    /// Results are cached in a static field so subsequent scoped instances skip the call.
+    /// </summary>
+    private async Task EnsureDynamicDiscoveryAsync(CancellationToken cancellationToken)
+    {
+        if (!_needsDynamicDiscovery) return;
+
+        // Fast path: another request already populated the static cache
+        if (s_discoveredAgentIds != null)
+        {
+            _configuredAgentIds = s_discoveredAgentIds;
+            _defaultAgentId = s_discoveredAgentIds[0];
+            _effectiveAgentId = _defaultAgentId;
+            return;
+        }
+
+        await s_discoveryLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (s_discoveredAgentIds != null)
+            {
+                _configuredAgentIds = s_discoveredAgentIds;
+                _defaultAgentId = s_discoveredAgentIds[0];
+                _effectiveAgentId = _defaultAgentId;
+                return;
+            }
+
+            _logger.LogInformation(
+                "No agent IDs configured; discovering agents dynamically from AI Foundry endpoint");
+
+            var ids = new List<string>();
+            await foreach (var record in GetProjectClient().AgentAdministrationClient
+                .GetAgentsAsync(cancellationToken: cancellationToken))
+            {
+                ids.Add(record.Name);
+            }
+
+            if (ids.Count == 0)
+                throw new InvalidOperationException(
+                    "Dynamic agent discovery found no agents in the AI Foundry project. " +
+                    "Set AI_AGENT_ID or AI_AGENT_IDS to configure agents explicitly.");
+
+            _logger.LogInformation(
+                "Discovered {Count} agent(s) dynamically: {Names}", ids.Count, string.Join(", ", ids));
+
+            s_discoveredAgentIds = ids;
+            _configuredAgentIds = ids;
+            _defaultAgentId = ids[0];
+            _effectiveAgentId = _defaultAgentId;
+        }
+        finally
+        {
+            s_discoveryLock.Release();
+        }
+    }
 
     /// <summary>
     /// Get agent via Microsoft Agent Framework extension methods.
@@ -244,6 +332,9 @@ public class AgentFrameworkService : IDisposable
     private async Task<FoundryAgent> GetAgentAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // Ensure dynamic discovery has run so _effectiveAgentId is populated
+        await EnsureDynamicDiscoveryAsync(cancellationToken);
 
         var agentId = _effectiveAgentId;
 

@@ -358,7 +358,7 @@ app.MapGet("/api/agents", async (
 {
     try
     {
-        var (agentIds, defaultAgentId) = agentService.GetConfiguredAgents();
+        var (agentIds, defaultAgentId) = await agentService.GetConfiguredAgentsAsync(cancellationToken);
         var agents = new List<AgentMetadataResponse>();
 
         foreach (var agentId in agentIds)
