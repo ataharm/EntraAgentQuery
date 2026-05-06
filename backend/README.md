@@ -64,7 +64,17 @@ AzureAd__ClientId=...
 AzureAd__TenantId=...
 AI_AGENT_ENDPOINT=...
 AI_AGENT_ID=...
+AI_AGENT_IDS=...
 ```
+
+For multi-agent scenarios (including prompt agents), create agents first in Foundry and prefer:
+
+```ini
+AI_AGENT_IDS=agent-one,agent-two
+AI_AGENT_ID=
+```
+
+Use `AI_AGENT_ID` only when you intentionally run single-agent mode.
 
 Environment variables are loaded before ASP.NET Core configuration builder runs.
 

@@ -63,11 +63,56 @@ These steps are performed via Azure CLI logged in to the **deployment** subscrip
 
 ### 4. Assign RBAC Roles to the Managed Identity
 
-The Container App runs as a user-assigned managed identity (`WEB_IDENTITY_PRINCIPAL_ID = 0a778c41-549b-480b-b4b1-91275ef69c65`). This identity must have the following roles on the AI Foundry resource:
+The Container App runs as a user-assigned managed identity. Read its principal ID from the active `azd` environment, derive the AI Foundry account from `AI_AGENT_ENDPOINT`, resolve its resource group in the deployment subscription, then assign roles on that AI Foundry resource:
 
 ```powershell
-$principalId = "0a778c41-549b-480b-b4b1-91275ef69c65"
-$scope = "/subscriptions/2325bd62-5b46-4e08-8cc3-3451c8d9a339/resourceGroups/rg-azdai01/providers/Microsoft.CognitiveServices/accounts/ai-account-7ccbhxrcshh52"
+$principalId = azd env get-value WEB_IDENTITY_PRINCIPAL_ID
+if ([string]::IsNullOrWhiteSpace($principalId)) {
+  throw "WEB_IDENTITY_PRINCIPAL_ID is not set in the current azd environment."
+}
+
+$aiAgentEndpoint = azd env get-value AI_AGENT_ENDPOINT
+if ([string]::IsNullOrWhiteSpace($aiAgentEndpoint)) {
+  throw "AI_AGENT_ENDPOINT is not set in the current azd environment."
+}
+
+$subscriptionId = azd env get-value AZURE_SUBSCRIPTION_ID
+if ([string]::IsNullOrWhiteSpace($subscriptionId)) {
+  throw "AZURE_SUBSCRIPTION_ID is not set in the current azd environment."
+}
+
+try {
+  $endpointUri = [Uri]$aiAgentEndpoint
+} catch {
+  throw "AI_AGENT_ENDPOINT is not a valid URI: $aiAgentEndpoint"
+}
+
+$aiFoundryResourceName = $endpointUri.Host -replace "\.services\.ai\.azure\.com$", ""
+if ([string]::IsNullOrWhiteSpace($aiFoundryResourceName) -or $aiFoundryResourceName -eq $endpointUri.Host) {
+  throw "Unable to derive AI Foundry resource name from AI_AGENT_ENDPOINT host: $($endpointUri.Host)"
+}
+
+$matches = az resource list `
+  --subscription $subscriptionId `
+  --resource-type Microsoft.CognitiveServices/accounts `
+  --name $aiFoundryResourceName `
+  --query "[].{id:id,resourceGroup:resourceGroup}" `
+  -o json | ConvertFrom-Json
+
+if ($null -eq $matches -or @($matches).Count -eq 0) {
+  throw "No Cognitive Services account named '$aiFoundryResourceName' found in subscription '$subscriptionId'."
+}
+
+if (@($matches).Count -gt 1) {
+  throw "Multiple Cognitive Services accounts named '$aiFoundryResourceName' found in subscription '$subscriptionId'."
+}
+
+$scope = $matches[0].id
+$aiFoundryResourceGroup = $matches[0].resourceGroup
+
+if ([string]::IsNullOrWhiteSpace($scope)) {
+  throw "Unable to resolve AI Foundry resource ID for scope."
+}
 
 foreach ($role in @("Cognitive Services User", "Cognitive Services OpenAI Contributor", "Azure AI Developer")) {
     az role assignment create `
@@ -84,17 +129,24 @@ foreach ($role in @("Cognitive Services User", "Cognitive Services OpenAI Contri
 | `Cognitive Services OpenAI Contributor` | Model access and conversations (`OpenAI/*`) |
 | `Azure AI Developer` | Agents v2 API (`SpeechServices`, `ContentSafety`, `MaaS`) |
 
-> **Note:** These are assigned on the external AI Foundry resource in `rg-azdai01`, which is **not** managed by `azd`. They survive `azd down` and do not need to be recreated unless the managed identity is replaced.
+> **Note:** These are assigned on the external AI Foundry resource resolved from `AI_AGENT_ENDPOINT`, which is **not** managed by `azd`. They survive `azd down` and do not need to be recreated unless the managed identity is replaced.
 
 ### 5. Verify Container App Environment Variables
 
 Confirm the running Container App has the correct values:
 
 ```powershell
+$containerAppName = azd env get-value AZURE_CONTAINER_APP_NAME
+$resourceGroupName = azd env get-value AZURE_RESOURCE_GROUP_NAME
+
+if ([string]::IsNullOrWhiteSpace($containerAppName) -or [string]::IsNullOrWhiteSpace($resourceGroupName)) {
+  throw "AZURE_CONTAINER_APP_NAME and AZURE_RESOURCE_GROUP_NAME must be set in the current azd environment."
+}
+
 az containerapp show `
-  --name ca-web-zg45tevq5pmco `
-  --resource-group rg-fndragntweb01 `
-  --query "properties.template.containers[0].env[?name=='AI_AGENT_ENDPOINT' || name=='AI_AGENT_ID'].{name:name,value:value}" `
+  --name $containerAppName `
+  --resource-group $resourceGroupName `
+  --query "properties.template.containers[0].env[?name=='AI_AGENT_ENDPOINT' || name=='AI_AGENT_ID' || name=='AI_AGENT_IDS'].{name:name,value:value}" `
   -o table
 ```
 
@@ -103,15 +155,23 @@ Expected:
 | Name | Value |
 |---|---|
 | `AI_AGENT_ENDPOINT` | `https://ai-account-7ccbhxrcshh52.services.ai.azure.com/api/projects/ai-project-azdai01` |
-| `AI_AGENT_ID` | `summarization-agent` |
+| `AI_AGENT_IDS` | `summarization-agent,prompt-agent` |
+| `AI_AGENT_ID` | (empty for multi-agent mode) |
 
-If either is wrong, update directly without a full redeploy:
+If any value is wrong, update directly without a full redeploy:
 
 ```powershell
+$containerAppName = azd env get-value AZURE_CONTAINER_APP_NAME
+$resourceGroupName = azd env get-value AZURE_RESOURCE_GROUP_NAME
+
+if ([string]::IsNullOrWhiteSpace($containerAppName) -or [string]::IsNullOrWhiteSpace($resourceGroupName)) {
+  throw "AZURE_CONTAINER_APP_NAME and AZURE_RESOURCE_GROUP_NAME must be set in the current azd environment."
+}
+
 az containerapp update `
-  --name ca-web-zg45tevq5pmco `
-  --resource-group rg-fndragntweb01 `
-  --set-env-vars "AI_AGENT_ENDPOINT=<value>" "AI_AGENT_ID=<value>"
+  --name $containerAppName `
+  --resource-group $resourceGroupName `
+  --set-env-vars "AI_AGENT_ENDPOINT=<value>" "AI_AGENT_IDS=<agent-1,agent-2>" "AI_AGENT_ID="
 ```
 
 ---
@@ -124,7 +184,7 @@ az containerapp update `
 | Set Application ID URI | `postprovision.ps1` (same tenant only) | **Step 1** |
 | Add Container App redirect URI | `postprovision.ps1` (same tenant only) | **Step 2** |
 | Assign AI Foundry RBAC roles | `postprovision.ps1` | **Step 4** (if resource group/name was wrong) |
-| Set `AI_AGENT_ENDPOINT` / `AI_AGENT_ID` on Container App | Bicep (reads from `.env`) | **Step 5** (if `.env` was stale) |
+| Set `AI_AGENT_ENDPOINT` / `AI_AGENT_ID` / `AI_AGENT_IDS` on Container App | Bicep (reads from `.env`) | **Step 5** (if `.env` was stale) |
 
 ---
 
@@ -132,6 +192,6 @@ az containerapp update `
 
 Every time `azd provision` runs (e.g., to update infrastructure), Bicep recreates the Container App revision from `.env` values. Verify:
 
-1. `.azure/fndragntweb01/.env` has the correct `AI_AGENT_ENDPOINT`, `AI_AGENT_ID`, `AI_FOUNDRY_RESOURCE_GROUP`, and `AI_FOUNDRY_RESOURCE_NAME`.
+1. `.azure/fndragntweb01/.env` has the correct `AI_AGENT_ENDPOINT`, `AI_AGENT_IDS`, `AI_AGENT_ID` (empty for multi-agent mode), `AI_FOUNDRY_RESOURCE_GROUP`, and `AI_FOUNDRY_RESOURCE_NAME`.
 2. The redirect URI in the app registration tenant still includes the Container App URL (the FQDN is stable for this environment).
 3. RBAC roles on `ai-account-7ccbhxrcshh52` are still present (they persist across `azd` operations).

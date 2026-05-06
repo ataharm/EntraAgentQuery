@@ -17,7 +17,9 @@ deployment/
 │       ├── Get-AIFoundryAgents.ps1
 │       └── New-EntraAppRegistration.ps1
 └── scripts/             # User-invoked scripts
-    └── start-local-dev.ps1  # Start native local development
+  ├── start-local-dev.ps1          # Start native local development
+  ├── list-agents.ps1              # List agents in the configured Foundry project
+  └── set-container-agent-settings.ps1  # Update AI_AGENT_ID / AI_AGENT_IDS directly on Container App
 ```
 
 ## Build Strategy
@@ -58,7 +60,39 @@ azd deploy
 - First deployment: `azd up`
 - Deploy code changes: `azd deploy`
 - Local development: `.\deployment\scripts\start-local-dev.ps1`
+- Update deployed container agent settings: `.\deployment\scripts\set-container-agent-settings.ps1`
 - Clean up: `azd down --force --purge`
+
+## Update Container App Agent Settings From Azure CLI
+
+Use the script when you want to change agent configuration on the running Container App without running a full `azd up`.
+
+Show current deployed values:
+
+```powershell
+.\deployment\scripts\set-container-agent-settings.ps1 -ShowOnly
+```
+
+Set multi-agent mode (recommended after creating agents, including prompt agents):
+
+```powershell
+.\deployment\scripts\set-container-agent-settings.ps1 -AgentIds "dad-joke-generator,just-for-fun-agent"
+```
+
+Set single-agent mode:
+
+```powershell
+.\deployment\scripts\set-container-agent-settings.ps1 -SingleAgent -AgentId "dad-joke-generator"
+```
+
+Optional explicit targeting (if not using current `azd` environment):
+
+```powershell
+.\deployment\scripts\set-container-agent-settings.ps1 `
+  -ResourceGroupName "rg-fndragntweb01" `
+  -ContainerAppName "ca-web-c6a3j3z427hog" `
+  -AgentIds "agent-a,agent-b"
+```
 
 ## Docker Details
 
