@@ -1,4 +1,4 @@
-targetScope = 'subscription'
+//targetScope = 'subscription'
 
 // Force re-deployment after resource group deletion
 @minLength(1)
@@ -40,16 +40,16 @@ var appTags = {
 
 var tags = union(defaultTags, appTags)
 
-resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
-  name: '${abbrs.resourcesResourceGroups}${environmentName}'
-  location: location
-  tags: tags
-}
+//resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
+//  name: '${abbrs.resourcesResourceGroups}${environmentName}'
+//  location: location
+//  tags: tags
+//}
 
 // Deploy infrastructure (ACR + Container Apps Environment)
 module infrastructure 'main-infrastructure.bicep' = {
   name: 'infrastructure'
-  scope: rg
+//  scope: rg
   params: {
     location: location
     tags: tags
@@ -61,7 +61,7 @@ module infrastructure 'main-infrastructure.bicep' = {
 // Creates with localhost-only redirect URIs; postprovision adds Container App FQDN + FIC
 module entraApp 'entra-app.bicep' = {
   name: 'entra-app'
-  scope: rg
+ // scope: rg
   params: {
     environmentName: environmentName
     serviceManagementReference: serviceManagementReference
@@ -72,7 +72,7 @@ module entraApp 'entra-app.bicep' = {
 // Deploy application (Container Apps + RBAC)
 module app 'main-app.bicep' = {
   name: 'app'
-  scope: rg
+//  scope: rg
   params: {
     location: location
     tags: tags
