@@ -1,6 +1,6 @@
-//targetScope = 'subscription'
+targetScope = 'resourceGroup'
 
-// Force re-deployment after resource group deletion
+// Deploy into the existing resource group selected by azd / AZURE_RESOURCE_GROUP.
 @minLength(1)
 @maxLength(64)
 @description('Name of the environment (e.g., dev, prod)')
@@ -40,16 +40,9 @@ var appTags = {
 
 var tags = union(defaultTags, appTags)
 
-//resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
-//  name: '${abbrs.resourcesResourceGroups}${environmentName}'
-//  location: location
-//  tags: tags
-//}
-
 // Deploy infrastructure (ACR + Container Apps Environment)
 module infrastructure 'main-infrastructure.bicep' = {
   name: 'infrastructure'
-//  scope: rg
   params: {
     location: location
     tags: tags
@@ -61,7 +54,6 @@ module infrastructure 'main-infrastructure.bicep' = {
 // Creates with localhost-only redirect URIs; postprovision adds Container App FQDN + FIC
 module entraApp 'entra-app.bicep' = {
   name: 'entra-app'
- // scope: rg
   params: {
     environmentName: environmentName
     serviceManagementReference: serviceManagementReference
@@ -72,7 +64,6 @@ module entraApp 'entra-app.bicep' = {
 // Deploy application (Container Apps + RBAC)
 module app 'main-app.bicep' = {
   name: 'app'
-//  scope: rg
   params: {
     location: location
     tags: tags
@@ -98,7 +89,7 @@ module app 'main-app.bicep' = {
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = infrastructure.outputs.containerRegistryLoginServer
 output AZURE_CONTAINER_REGISTRY_NAME string = infrastructure.outputs.containerRegistryName
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = infrastructure.outputs.containerAppsEnvironmentId
-output AZURE_RESOURCE_GROUP_NAME string = rg.name
+output AZURE_RESOURCE_GROUP_NAME string = resourceGroup().name
 output AZURE_CONTAINER_APP_NAME string = app.outputs.webAppName
 output WEB_ENDPOINT string = app.outputs.webEndpoint
 output WEB_IDENTITY_PRINCIPAL_ID string = infrastructure.outputs.managedIdentityPrincipalId
